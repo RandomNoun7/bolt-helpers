@@ -40,8 +40,10 @@ function New-BoltMetadata {
         foreach ($file in $path) {
             $help = Get-help $file
             $command = Get-Command -Name $file
-            $attributesCollection = New-object System.Collections.ArrayList
+            $attributesCollection = [System.Collections.Generic.List[object]]::new()
+            $outputFileName = [system.io.path]::ChangeExtension((Get-Item $file).fullname, 'json')
 
+            # Get Parameter Data Object
             foreach ($param in $command.Parameters.Values) {
                 $description = ($help.parameters.parameter.where( {$_.name -eq $param.name})).description
                 @{
@@ -58,22 +60,18 @@ function New-BoltMetadata {
                     | Foreach-object -Process {[void]$attributesCollection.Add($_)}
             }
 
+            # Set Type String
             foreach ($set in $attributesCollection) {
                 $typeString = ''
 
-                if ($set.type -eq 'SwitchParameter') {
-                    $typeString = 'Boolean'
-                    if (-not $set.isMandatory) {
-                        $typeString = "Optional[$typeString]"
-                    }
-                    $set.typeString = $typeString
-                    continue
+                $typeString = switch -wildcard ($set.type) {
+                    'Int*' { 'Integer' }
+                    {@('SwitchParameter', 'Bool') -contains $_} { 'Boolean' }
+                    Default { 'String' }
                 }
 
                 if ($set.isArray) {
-                    $typeString = "Varient[Array[{0}], {0}]" -f $set.Type
-                } else {
-                    $typeString = $set.Type
+                    $typeString = "Varient[Array[{0}], {0}]" -f $typeString
                 }
 
                 if ($set.isOptional) {
@@ -83,21 +81,19 @@ function New-BoltMetadata {
                 $set.typeString = $typeString
             }
 
-            $metaObject = @{
-                puppet_task_version = 1
-                input_method        = 'powershell'
-                description         = $help.Synopsis
+            # If the script supports noop, that goes somewhere else in the json, not as a parameter.
+            $_noop = $attributesCollection.where( {$_.name -eq '_noop'})
+
+            if ($_noop) {
+                $attributesCollection = $attributesCollection | Where-Object -FilterScript {'_noop' -ne $_.name}
             }
 
-            if ($noop = $attributesCollection.where( {$_.name -eq '_noop'})) {
-                $metaObject.suports_noop = $true
-                $attributesCollection.remove($noop)
-            }
-
+            # Common paremeters are included by default. We remove them though unless the user specificially wants them in the output json.
             if (!$IncludeCommonParameters) {
                 $attributesCollection = $attributesCollection | Where-Object -FilterScript {$commonParameters -notcontains $_.name}
             }
 
+            # Build out the parameter objects
             $parameters = @{}
 
             foreach ($param in $attributesCollection) {
@@ -107,8 +103,16 @@ function New-BoltMetadata {
                 }
             }
 
-            $metaObject.parameters = $parameters
-            $metaObject | ConvertTo-JSON -Depth 99
+            $metaObject = @{
+                puppet_task_version = 1
+                input_method        = 'powershell'
+                description         = $help.Synopsis
+                parameters          = $parameters
+                supports_noop       = ($_noop.count -gt 0)
+            }
+
+            $outputContent = $metaObject | ConvertTo-JSON -Depth 99
+            Set-Content -Path $outputFileName -Value $outputContent -Encoding utf8
         }
     }
 
